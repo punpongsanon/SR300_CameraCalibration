@@ -131,9 +131,6 @@ bool CameraCalibration::Calibrate()
 		fs["markersX"] >> marker_length;
 		fs["markersX"] >> marker_separation;
 		fs["markersX"] >> dictionary_id;
-		fs["markersX"] >> margins;
-		fs["markersX"] >> borderBits;
-		fs["markersX"] >> showImage;
 	}
 	else
 	{

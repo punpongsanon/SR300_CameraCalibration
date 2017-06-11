@@ -43,4 +43,7 @@ class CameraCalibration
 									DICT_7X7_100=13, DICT_7X7_250=14, DICT_7X7_1000=15, DICT_ARUCO_ORIGINAL = 16
 									*/
 		int dictionary_id;
+		int calibrationFlags;
+		float aspectRatio;
+		bool refindStrategy;
 };

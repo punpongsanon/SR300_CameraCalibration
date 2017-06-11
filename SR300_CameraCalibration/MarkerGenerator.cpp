@@ -34,8 +34,6 @@ bool MarkerGenerator::CreateMarker()
 		markers_y = 8;
 		marker_length = 0.04;
 		marker_separation = 0.01;
-
-
 		dictionary_id = cv::aruco::DICT_6X6_250;
 		margins = 10;
 		borderBits = 1;

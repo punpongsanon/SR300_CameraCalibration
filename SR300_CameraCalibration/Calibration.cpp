@@ -115,7 +115,7 @@ bool CameraCalibration::Calibrate()
 {
 	// Get the detector parameters
 	cv::Ptr<cv::aruco::DetectorParameters> detectorParams = cv::aruco::DetectorParameters::create();
-	bool readable = readDetectorParameters("detector_params.yml", detectorParams);
+	bool readable = readDetectorParameters("data/in_DetectorParameters.yml", detectorParams);
 	if (!readable)
 	{
 		std::cerr << "Invalid detector parameters file" << std::endl;
@@ -127,10 +127,10 @@ bool CameraCalibration::Calibrate()
 	if (fs.isOpened())
 	{
 		fs["markersX"] >> markers_x;
-		fs["markersX"] >> markers_y;
-		fs["markersX"] >> marker_length;
-		fs["markersX"] >> marker_separation;
-		fs["markersX"] >> dictionary_id;
+		fs["markersY"] >> markers_y;
+		fs["markerLength"] >> marker_length;
+		fs["markerSeparation"] >> marker_separation;
+		fs["dictionaryId"] >> dictionary_id;
 	}
 	else
 	{
@@ -139,11 +139,134 @@ bool CameraCalibration::Calibrate()
 		markers_y = 8;
 		marker_length = 0.04;
 		marker_separation = 0.01;
-
-
 		dictionary_id = cv::aruco::DICT_6X6_250;
-		margins = 10;
-		borderBits = 1;
-		showImage = true;
 	}
+
+	calibrationFlags = 0;
+	aspectRatio = 1;
+	refindStrategy = false;
+
+	// Register markers
+	cv::Ptr<cv::aruco::Dictionary> dictionary = cv::aruco::getPredefinedDictionary(cv::aruco::PREDEFINED_DICTIONARY_NAME(dictionary_id));
+
+	// Create board object
+	cv::Ptr<cv::aruco::GridBoard> gridboard = cv::aruco::GridBoard::create(markers_x, markers_y, marker_length, marker_separation, dictionary);
+	cv::Ptr<cv::aruco::Board> board = gridboard.staticCast<cv::aruco::Board>();
+
+	// Collected frames for calibration
+	std::vector<std::vector<std::vector<cv::Point2f>>> allCorners;
+	std::vector<std::vector<int>> allIds;
+	cv::Size imageSize;
+
+	PXCSession *session = PXCSession::CreateInstance();
+	PXCSenseManager *sm = PXCSenseManager::CreateInstance();
+
+	// Capture parameter (SR300)
+	cv::Size frameSize = cv::Size(640, 480);
+	float frameRate = 60;
+	cv::Mat frameColor = cv::Mat::zeros(frameSize, CV_8UC3);
+
+	sm->EnableStream(PXCCapture::STREAM_TYPE_COLOR, frameSize.width, frameSize.height, frameRate);
+	sm->Init();
+
+	while(1)
+	{
+		if (sm->AcquireFrame(true) < PXC_STATUS_NO_ERROR) break;
+
+		PXCCapture::Sample *sample;
+		sample = sm->QuerySample();
+
+		if (sample->color)	frameColor = PXCImage2CVMat(sample->color, PXCImage::PIXEL_FORMAT_RGB24);
+
+		std::vector<int> ids;
+		std::vector<std::vector<cv::Point2f>> corners, rejected;
+
+		// Detect markers
+		cv::aruco::detectMarkers(frameColor, dictionary, corners, ids, detectorParams, rejected);
+
+		// Refind strategy to detect more markers
+		if (refindStrategy) cv::aruco::refineDetectedMarkers(frameColor, board, corners, ids, rejected);
+
+		// draw results
+		cv::Mat frameResult;
+		frameColor.copyTo(frameResult);
+		if (ids.size() > 0) cv::aruco::drawDetectedMarkers(frameResult, corners, ids);
+		cv::putText(frameResult, "Press 'c' to add current frame. 'ESC' to finish and calibrate",
+		cv::Point(10, 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 0), 2);
+
+		cv::imshow("Calibration - Input", frameResult);
+
+		char key = (char)cv::waitKey(10);
+		if (key == 27) break;
+		if (key == 'c' && ids.size() > 0)
+		{
+			std::cout << "Frame captured" << std::endl;
+			allCorners.push_back(corners);
+			allIds.push_back(ids);
+			imageSize = frameColor.size();
+		}
+
+		sm->ReleaseFrame();
+	}
+
+	if (allIds.size() < 1)
+	{
+		std::cerr << "Not enough captures for calibration" << std::endl;
+		return 0;
+	}
+
+	// Calibration
+	cv::Mat cameraMatrix, distCoeffs;
+	std::vector<cv::Mat> rvecs, tvecs;
+	double repError;
+
+	if (calibrationFlags & cv::CALIB_FIX_ASPECT_RATIO) 
+	{
+		cameraMatrix = cv::Mat::eye(3, 3, CV_64F);
+		cameraMatrix.at<double>(0, 0) = aspectRatio;
+	}
+
+	// Prepare data for calibration
+	std::vector<std::vector<cv::Point2f>> allCornersConcatenated;
+	std::vector<int> allIdsConcatenated;
+	std::vector<int> markerCounterPerFrame;
+	markerCounterPerFrame.reserve(allCorners.size());
+	for (unsigned int i = 0; i < allCorners.size(); i++) 
+	{
+		markerCounterPerFrame.push_back((int)allCorners[i].size());
+		for (unsigned int j = 0; j < allCorners[i].size(); j++) 
+		{
+			allCornersConcatenated.push_back(allCorners[i][j]);
+			allIdsConcatenated.push_back(allIds[i][j]);
+		}
+	}
+
+	// Calibrate camera
+	repError = cv::aruco::calibrateCameraAruco(allCornersConcatenated, 
+											   allIdsConcatenated,
+											   markerCounterPerFrame, 
+											   board, 
+											   imageSize, 
+											   cameraMatrix,
+											   distCoeffs, 
+											   rvecs, 
+											   tvecs, 
+											   calibrationFlags);
+
+	bool isSave = saveCameraParams(cameraParameter, 
+							       imageSize, 
+								   aspectRatio, 
+								   calibrationFlags, 
+								   cameraMatrix,
+								   distCoeffs, 
+								   repError);
+
+	if (!isSave) 
+	{
+		std::cerr << "Cannot save output file" << std::endl;
+		return 0;
+	}
+
+	std::cout << "Rep Error: " << repError << std::endl;
+	std::cout << "Calibration saved to " << cameraParameter << std::endl;
 }
